@@ -49,9 +49,13 @@ def handle_message(event):
             reply_text = "📊【你的專屬監測名單】\n"
             for stock_id in current_stocks:
                 stock_name = ""
-                # 利用 twstock 快速帶出股票名稱
+                # A：利用 twstock 快速帶出股票名稱
                 if stock_id in twstock.codes:
                     stock_name = twstock.codes[stock_id].name
+                # B：針對 twstock 找不到的特殊代號手動對應名稱
+                elif stock_id == "7911":
+                    stock_name = "阿波羅電力"
+                    
                 reply_text += f"🔹 {stock_id} {stock_name}\n"
 
     # 2. 處理新增股票指令 (結尾是 in，例如：2330 in 或 7911 in 或 台積電 in)
@@ -60,11 +64,13 @@ def handle_message(event):
         stock_id = None
         stock_name = ""
 
-        # A：判斷是不是純數字代號 (支援 2330 上市櫃，也支援 7911 興櫃或其他代號)
+        # A：判斷是不是純數字代號
         if target_name_or_id.isdigit():
             stock_id = target_name_or_id
             if stock_id in twstock.codes:
                 stock_name = twstock.codes[stock_id].name
+            elif stock_id == "7911":
+                stock_name = "阿波羅電力"
             else:
                 stock_name = "興櫃/其他股票"
 
