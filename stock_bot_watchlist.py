@@ -21,6 +21,12 @@ client = MongoClient(MONGO_URI)
 db = client["stock_db"]
 users_collection = db["users"]
 
+# 手動對應字典 (處理 twstock 抓不到的興櫃股或自訂名稱)
+MANUAL_MAP = {
+    "7911": "阿波羅電力",
+    "7856": "漢測"
+}
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers["X-Line-Signature"]
@@ -49,54 +55,75 @@ def handle_message(event):
             reply_text = "📊【你的專屬監測名單】\n"
             for stock_id in current_stocks:
                 stock_name = ""
-                # A：利用 twstock 快速帶出股票名稱
                 if stock_id in twstock.codes:
                     stock_name = twstock.codes[stock_id].name
-                # B：針對 twstock 找不到的特殊代號手動對應名稱
-                elif stock_id == "7911":
-                    stock_name = "阿波羅電力"
-                    
+                elif stock_id in MANUAL_MAP:
+                    stock_name = MANUAL_MAP[stock_id]
                 reply_text += f"🔹 {stock_id} {stock_name}\n"
 
-    # 2. 處理新增股票指令 (結尾是 in，例如：2330 in 或 7911 in 或 台積電 in)
+    # 2. 處理新增股票指令 (結尾是 in，支援單檔或多檔空白隔開)
     elif text.endswith("in"):
-        target_name_or_id = text[:-2].strip()
-        stock_id = None
-        stock_name = ""
-
-        # A：判斷是不是純數字代號
-        if target_name_or_id.isdigit():
-            stock_id = target_name_or_id
-            if stock_id in twstock.codes:
-                stock_name = twstock.codes[stock_id].name
-            elif stock_id == "7911":
-                stock_name = "阿波羅電力"
-            else:
-                stock_name = "興櫃/其他股票"
-
+        content = text[:-2].strip() # 拿掉結尾的 in
+        # 用空格把輸入的內容拆開成清單 (例如 ["2330", "4114", "7911"])
+        raw_items = content.replace(",", " ").split()
+        
+        if not raw_items:
+            reply_text = "❌ 請輸入要加入的股票代號或名稱喔！"
         else:
-            # B：輸入中文名稱反查代號 (例如 台積電)
-            for code, obj in twstock.codes.items():
-                if obj.name == target_name_or_id and obj.type == '股票':
-                    stock_id = code
-                    stock_name = obj.name
-                    break
-
-        if stock_id:
-            # 讀取現有名單，避免重複新增
+            # 讀取現有名單
             user_data = users_collection.find_one({"_id": user_id})
             current_stocks = user_data.get("stocks", []) if user_data else []
+            
+            success_list = []
+            fail_list = []
 
-            if stock_id not in current_stocks:
-                current_stocks.append(stock_id)
-                users_collection.update_one(
-                    {"_id": user_id},
-                    {"$set": {"stocks": current_stocks}},
-                    upsert=True
-                )
-            reply_text = f"✅ 已將【{stock_id} {stock_name}】加入你的監測名單！"
-        else:
-            reply_text = f"❌ 找不到名稱為「{target_name_or_id}」的股票，請重新確認喔！"
+            for item in raw_items:
+                stock_id = None
+                stock_name = ""
+
+                # 判斷是代號還是中文名稱
+                if item.isdigit():
+                    stock_id = item
+                    if stock_id in twstock.codes:
+                        stock_name = twstock.codes[stock_id].name
+                    elif stock_id in MANUAL_MAP:
+                        stock_name = MANUAL_MAP[stock_id]
+                    else:
+                        stock_name = "興櫃/其他股票"
+                else:
+                    # 如果輸入的是中文名稱
+                    reverse_map = {v: k for k, v in MANUAL_MAP.items()}
+                    if item in reverse_map:
+                        stock_id = reverse_map[item]
+                        stock_name = item
+                    else:
+                        for code, obj in twstock.codes.items():
+                            if obj.name == item and obj.type == '股票':
+                                stock_id = code
+                                stock_name = obj.name
+                                break
+
+                # 成功辨識出代號，加入暫存清單與資料庫
+                if stock_id:
+                    if stock_id not in current_stocks:
+                        current_stocks.append(stock_id)
+                    success_list.append(f"{stock_id} {stock_name}")
+                else:
+                    fail_list.append(item)
+
+            # 更新資料庫
+            users_collection.update_one(
+                {"_id": user_id},
+                {"$set": {"stocks": current_stocks}},
+                upsert=True
+            )
+
+            # 組合回覆訊息
+            reply_text = ""
+            if success_list:
+                reply_text += "✅ 成功加入以下股票：\n" + "\n".join([f"• {s}" for s in success_list])
+            if fail_list:
+                reply_text += f"\n❌ 找不到以下項目：{', '.join(fail_list)}"
 
     # 若有產生回覆內容則傳送給使用者
     if reply_text:
