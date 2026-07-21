@@ -52,6 +52,9 @@ def handle_message(event):
                 # 利用 twstock 快速帶出股票名稱
                 if stock_id in twstock.codes:
                     stock_name = twstock.codes[stock_id].name
+                else:
+                    # 如果字典沒收錄，給予預設提示避免空白
+                    stock_name = "(名稱未收錄)"
                 reply_text += f"🔹 {stock_id} {stock_name}\n"
 
     # 2. 處理新增股票指令 (結尾是 in，例如：2330 in 或 台積電 in)
