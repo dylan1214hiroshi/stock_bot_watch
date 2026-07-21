@@ -98,22 +98,29 @@ def generate_gemini_summary(stock_id, stock_name, news_titles):
         return f"🚨 API 錯誤: {type(e).__name__} - {str(e)}"
 
 # ---------------------------------------------------------
-# 3. 主程式：產出報告並推播給使用者
+# 3. 主程式：產出報告並獨立推播給每一位使用者
 # ---------------------------------------------------------
 def send_morning_reports():
     print("開始產出台股晨報...")
     
-    users = list(users_collection.find({"stocks": {"$exists": True, "$ne": []}}))
+    # 抓取資料庫中的所有使用者，讓每位加入的好友都能收到各自的清單
+    users = list(users_collection.find({}))
     if not users:
-        print("沒有使用者需要發送晨報（資料庫中找不到任何儲存股票的使用者）。")
+        print("沒有使用者資料需要發送晨報。")
         return
 
     stock_summary_cache = {}
 
     for user in users:
         user_id = user["_id"]
-        stocks = user["stocks"]
+        stocks = user.get("stocks", [])
         
+        # 如果該使用者沒有設定任何自選股，則跳過不發送
+        if not stocks:
+            print(f"用戶 {user_id} 沒有設定自選股，略過發送。")
+            continue
+        
+        print(f"正在為用戶 {user_id} 產出報告，監測標的: {stocks}")
         report_lines = ["☀️【早安！台股監測多空晨報】\n為你整理今日關注股票的最新動態：\n"]
         
         for stock_id in stocks:
@@ -137,13 +144,12 @@ def send_morning_reports():
         final_report = "\n".join(report_lines).strip()
         
         try:
-            print(f"DEBUG: 準備發送 LINE 推播給 User ID: {user_id}，內容長度: {len(final_report)}")
             line_bot_api.push_message(
                 user_id,
                 TextSendMessage(text=final_report)
             )
-            print(f"✅ 成功發送晨報給 {user_id}")
+            print(f"✅ 成功發送晨報給用戶 {user_id}")
         except Exception as e:
-            print(f"❌ 推播失敗詳情 ({user_id}): {type(e).__name__} - {e}")
+            print(f"❌ 推播失敗 ({user_id}): {e}")
 
     print("晨報發送完畢！")
