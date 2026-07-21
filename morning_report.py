@@ -89,13 +89,17 @@ def generate_gemini_summary(stock_id, stock_name, news_titles):
     """
 
     try:
+        # 加入 DEBUG 訊息，方便在 Render Log 中追蹤錯誤
+        print(f"DEBUG: 正在呼叫 Gemini... API Key 長度為: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}")
+        
         response = gemini_client.models.generate_content(
             model='gemini-1.5-flash',
             contents=prompt,
         )
         return response.text.strip()
     except Exception as e:
-        print(f"Gemini API 錯誤: {e}")
+        # 把詳細的錯誤印出來，這樣在 Render Log 就能一目瞭然！
+        print(f"❌ Gemini API 發生詳細錯誤: {type(e).__name__} - {e}")
         return "新聞摘要生成失敗，請稍後再試。"
 
 # ---------------------------------------------------------
