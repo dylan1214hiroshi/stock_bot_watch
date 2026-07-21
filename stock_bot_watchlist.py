@@ -61,45 +61,48 @@ def handle_message(event):
     text = event.text.strip()
     parts = text.split()
 
-    if len(parts) == 2:
-        stock_id, action = parts[0], parts[1].lower()
+    if len(parts) >= 2:
+        action = parts[-1].lower()
+        stock_ids = parts[:-1]
         
-        if action == "in":
-            # 檢查股票代號是否存在
-            stock_name = ""
-            if stock_id in twstock.codes:
-                stock_name = twstock.codes[stock_id].name
-            elif stock_id == "7911":
-                stock_name = "阿波羅電力"
-            elif stock_id == "7856":
-                stock_name = "漢測"
+        if action in ["in", "out"]:
+            success_stocks = []
+            
+            for stock_id in stock_ids:
+                # 檢查代號合法性
+                stock_name = ""
+                if stock_id in twstock.codes:
+                    stock_name = twstock.codes[stock_id].name
+                elif stock_id == "7911":
+                    stock_name = "阿波羅電力"
+                elif stock_id == "7856":
+                    stock_name = "漢測"
+                else:
+                    continue  # 略過無效代號
+                
+                success_stocks.append(f"{stock_id} {stock_name}")
+                
+                if action == "in":
+                    users_collection.update_one(
+                        {"_id": user_id},
+                        {"$addToSet": {"stocks": stock_id}},
+                        upsert=True
+                    )
+                elif action == "out":
+                    users_collection.update_one(
+                        {"_id": user_id},
+                        {"$pull": {"stocks": stock_id}}
+                    )
+
+            if success_stocks:
+                msg_action = "成功加入監測" if action == "in" else "已從監測清單移除"
+                reply_text = f"✅ {msg_action}：\n" + "\n".join([f"• {s}" for s in success_stocks])
             else:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text=f"❌ 找不到股票代號：{stock_id}，請確認後再試。")
-                )
-                return
+                reply_text = "❌ 找不到您輸入的有效股票代號，請確認後再試。"
 
-            # 更新 MongoDB 監聽清單
-            users_collection.update_one(
-                {"_id": user_id},
-                {"$addToSet": {"stocks": stock_id}},
-                upsert=True
-            )
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=f"✅ 成功加入監測：{stock_id} {stock_name}")
-            )
-            return
-
-        elif action == "out":
-            users_collection.update_one(
-                {"_id": user_id},
-                {"$pull": {"stocks": stock_id}}
-            )
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"🗑️ 已從監測清單移除：{stock_id}")
+                TextSendMessage(text=reply_text)
             )
             return
 
@@ -120,7 +123,7 @@ def handle_message(event):
     # 預設回覆
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text="💡 指令說明：\n• 新增監測：輸入「2330 in」\n• 移除監測：輸入「2330 out」\n• 查看清單：輸入「list」")
+        TextSendMessage(text="💡 指令說明：\n• 新增單檔：輸入「2330 in」\n• 批量新增：輸入「4114 7799 2330 in」\n• 查看清單：輸入「list」")
     )
 
 if __name__ == "__main__":
