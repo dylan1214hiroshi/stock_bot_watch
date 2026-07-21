@@ -89,13 +89,13 @@ def generate_gemini_summary(stock_id, stock_name, news_titles):
     """
 
     try:
+        # 使用新版 SDK 標準支援的模型名稱
         response = gemini_client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt,
         )
         return response.text.strip()
     except Exception as e:
-        # 🚨 直接將真實的錯誤訊息回傳到 LINE 聊天室中
         return f"🚨 API 錯誤: {type(e).__name__} - {str(e)}"
 
 # ---------------------------------------------------------
