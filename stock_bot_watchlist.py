@@ -1,13 +1,16 @@
 import os
+import time
+from datetime import datetime, time as dt_time, timedelta
+import zoneinfo
+from urllib.parse import quote
+
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from pymongo import MongoClient
 import twstock
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import quote
+import feedparser
 
 app = Flask(__name__)
 
@@ -42,56 +45,42 @@ def callback():
     return "OK"
 
 # ==========================================
-# 📰 優化版多源新聞爬蟲核心函式 (Google 新聞 + 鉅亨網)
+# 📰 優化版多源新聞爬蟲核心函式 (Google News RSS + 時區過濾)
 # ==========================================
-def fetch_stock_news(keyword):
+def fetch_stock_news(keyword, start_time, end_time):
     news_list = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
-    # 1. 抓取 Google 新聞 (放寬限制，每檔股票取前 4 篇)
     try:
         encoded_keyword = quote(keyword)
-        url = f"https://news.google.com/search?q={encoded_keyword}&hl=zh-TW&gl=TW&ceid=TW%3Azh-Hant"
-        res = requests.get(url, headers=headers, timeout=6)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            articles = soup.find_all("article", limit=4)
-            for art in articles:
-                title_elem = art.find("a")
-                if title_elem:
-                    title = title_elem.text.strip()
-                    href = title_elem["href"]
-                    link = "https://news.google.com" + href[1:] if href.startswith(".") else href
-                    news_item = f"• {title}\n  🔗 {link}"
-                    if news_item not in news_list:
-                        news_list.append(news_item)
+        # 使用 Google News RSS 確保穩定抓取
+        url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        feed = feedparser.parse(url)
+        
+        tw_tz = zoneinfo.ZoneInfo("Asia/Taipei")
+        count = 0
+        
+        for entry in feed.entries:
+            # 轉換 RSS 的 UTC 時間為台灣時間
+            pub_utc = datetime(*entry.published_parsed[:6], tzinfo=zoneinfo.ZoneInfo('UTC'))
+            pub_tw = pub_utc.astimezone(tw_tz)
+            
+            # 嚴格判斷是否落在 前一天 08:30 ~ 今天 08:30
+            if start_time <= pub_tw <= end_time:
+                title = entry.title
+                link = entry.link
+                news_item = f"• {title}\n  🔗 {link}"
+                
+                if news_item not in news_list:
+                    news_list.append(news_item)
+                    count += 1
+                    
+            if count >= 4: # 每檔股票最多取 4 篇
+                break
+                
     except Exception as e:
-        print(f"Google 新聞抓取失敗 ({keyword}): {e}")
+        print(f"新聞抓取失敗 ({keyword}): {e}")
 
-    # 2. 抓取鉅亨網 (Anue) 搜尋結果 (放寬取最多 2 篇)
-    try:
-        encoded_keyword = quote(keyword)
-        url = f"https://news.cnyes.com/news/search?q={encoded_keyword}"
-        res = requests.get(url, headers=headers, timeout=6)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            links = soup.find_all("a", href=True)
-            count = 0
-            for l in links:
-                href = l["href"]
-                text_content = l.text.strip()
-                if "/news/id/" in href and len(text_content) > 4:
-                    full_link = f"https://news.cnyes.com{href}" if href.startswith("/") else href
-                    news_item = f"• {text_content}\n  🔗 {full_link}"
-                    if not any(text_content in existing for existing in news_list):
-                        news_list.append(news_item)
-                        count += 1
-                        if count >= 2:
-                            break
-    except Exception as e:
-        print(f"鉅亨網抓取失敗 ({keyword}): {e}")
-
-    return news_list[:4] # 總共合併取前 4 則最相關新聞
+    return news_list
 
 # ==========================================
 # ⏰ 每日早報自動推播路由 (供外部定時工具呼叫)
@@ -99,6 +88,16 @@ def fetch_stock_news(keyword):
 @app.route("/morning_report", methods=["GET"])
 def morning_report():
     try:
+        # 1. 計算時間邊界 (前一天 08:30 ~ 當下或今天 08:30)
+        tw_tz = zoneinfo.ZoneInfo("Asia/Taipei")
+        now = datetime.now(tw_tz)
+        
+        end_time = datetime.combine(now.date(), dt_time(8, 30), tzinfo=tw_tz)
+        if now < end_time:
+            end_time = datetime.combine(now.date(), dt_time(8, 30), tzinfo=tw_tz) - timedelta(days=1)
+        start_time = end_time - timedelta(days=1)
+        
+        # 2. 開始撈取資料庫用戶推播
         all_users = users_collection.find()
         count = 0
         for user in all_users:
@@ -107,7 +106,7 @@ def morning_report():
             if not stocks:
                 continue
             
-            report_content = "☀️【早安！台股監測多空晨報】\n為你整理今日關注股票的最新動態：\n"
+            report_content = f"☀️【早安！台股監測多空晨報】\n搜尋區間：{start_time.strftime('%m/%d %H:%M')} ~ {end_time.strftime('%m/%d %H:%M')}\n為你整理今日關注股票的最新動態：\n"
             
             for stock_id in stocks:
                 stock_name = ""
@@ -120,15 +119,20 @@ def morning_report():
                 
                 report_content += f"\n📊 標的：{stock_id} {stock_name}\n"
                 
-                # 同時以代號與名稱搜尋，確保能最大化抓取到新聞
-                news = fetch_stock_news(stock_name)
+                # 傳入精準的時間區間進行抓取
+                news = fetch_stock_news(stock_name, start_time, end_time)
+                
+                # 若用名稱抓不到，改用代碼抓取
                 if not news and stock_name != stock_id:
-                    news = fetch_stock_news(stock_id)
+                    news = fetch_stock_news(stock_id, start_time, end_time)
                 
                 if news:
                     report_content += "\n".join(news) + "\n"
                 else:
                     report_content += "• 近期無重大公開新聞或多空消息。\n"
+                
+                # 避免連續請求被 Google 阻擋
+                time.sleep(1.5)
 
             # 主動推播訊息給使用者
             line_bot_api.push_message(user_id, TextSendMessage(text=report_content.strip()))
