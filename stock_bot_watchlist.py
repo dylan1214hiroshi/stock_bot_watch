@@ -58,7 +58,7 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
-    # 修正：正確從 event.message.text 取得訊息文字
+    # 正確取得訊息文字
     text = event.message.text.strip()
     parts = text.split()
 
