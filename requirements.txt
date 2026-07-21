@@ -1,6 +1,6 @@
-flask
+Flask
 line-bot-sdk
 pymongo
-dnspython
 twstock
 requests
+bs4
