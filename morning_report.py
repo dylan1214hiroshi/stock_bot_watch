@@ -89,7 +89,6 @@ def generate_gemini_summary(stock_id, stock_name, news_titles):
     """
 
     try:
-        # 使用新版 SDK 標準支援的模型名稱
         response = gemini_client.models.generate_content(
             model='gemini-2.0-flash',
             contents=prompt,
@@ -106,7 +105,7 @@ def send_morning_reports():
     
     users = list(users_collection.find({"stocks": {"$exists": True, "$ne": []}}))
     if not users:
-        print("沒有使用者需要發送晨報。")
+        print("沒有使用者需要發送晨報（資料庫中找不到任何儲存股票的使用者）。")
         return
 
     stock_summary_cache = {}
@@ -138,12 +137,13 @@ def send_morning_reports():
         final_report = "\n".join(report_lines).strip()
         
         try:
+            print(f"DEBUG: 準備發送 LINE 推播給 User ID: {user_id}，內容長度: {len(final_report)}")
             line_bot_api.push_message(
                 user_id,
                 TextSendMessage(text=final_report)
             )
-            print(f"成功發送晨報給 {user_id}")
+            print(f"✅ 成功發送晨報給 {user_id}")
         except Exception as e:
-            print(f"推播失敗 ({user_id}): {e}")
+            print(f"❌ 推播失敗詳情 ({user_id}): {type(e).__name__} - {e}")
 
     print("晨報發送完畢！")
