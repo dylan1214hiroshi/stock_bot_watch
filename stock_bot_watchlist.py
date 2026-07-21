@@ -1,31 +1,31 @@
 import os
-import time
-from datetime import datetime, time as dt_time, timedelta
-import zoneinfo
-from urllib.parse import quote
-
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+import requests
+from bs4 import BeautifulSoup
+import google.generativeai as genai
+from linebot import LineBotApi
+from linebot.models import TextSendMessage
 from pymongo import MongoClient
 import twstock
-import feedparser
 
-app = Flask(__name__)
-
-# 從環境變數讀取 LINE 與 MongoDB 設定
+# ---------------------------------------------------------
+# 1. 環境變數與初始化
+# ---------------------------------------------------------
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 MONGO_URI = os.getenv("MONGO_URI")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 連線 MongoDB 資料庫
 client = MongoClient(MONGO_URI)
 db = client["stock_db"]
 users_collection = db["users"]
+
+# 初始化 Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    print("警告：未設定 GEMINI_API_KEY")
 
 # 手動對應字典 (處理 twstock 抓不到的興櫃股或自訂名稱)
 MANUAL_MAP = {
@@ -33,257 +33,126 @@ MANUAL_MAP = {
     "7856": "漢測"
 }
 
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers["X-Line-Signature"]
-    body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return "OK"
+# ---------------------------------------------------------
+# 2. 爬蟲與 AI 摘要模組
+# ---------------------------------------------------------
+def fetch_stock_news(stock_id):
+    """從白名單網站抓取新聞標題"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    }
+    news_titles = []
 
-# ==========================================
-# 📰 優化版多源新聞爬蟲核心函式 (Google News RSS + 時區過濾)
-# ==========================================
-def fetch_stock_news(keyword, start_time, end_time):
-    news_list = []
+    # 來源 A：Yahoo 股市
+    try:
+        yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}/news"
+        res = requests.get(yahoo_url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, "html.parser")
+        links = soup.find_all("a", href=True)
+        for link in links:
+            title = link.text.strip()
+            if len(title) > 10 and (stock_id in title or "台" in title or "營收" in title):
+                news_titles.append(f"[Yahoo] {title}")
+    except Exception as e:
+        print(f"Yahoo 爬蟲錯誤 ({stock_id}): {e}")
+
+    # 來源 B：鉅亨網
+    try:
+        anue_url = f"https://www.cnyes.com/search/news?keyword={stock_id}"
+        res = requests.get(anue_url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, "html.parser")
+        titles = soup.select("a._1Zdp h3")
+        for t in titles:
+            title_text = t.text.strip()
+            if len(title_text) > 5:
+                news_titles.append(f"[鉅亨網] {title_text}")
+    except Exception as e:
+        print(f"鉅亨網爬蟲錯誤 ({stock_id}): {e}")
+
+    return list(set(news_titles))
+
+def generate_gemini_summary(stock_id, stock_name, news_titles):
+    """呼叫 Gemini 進行整理與摘要"""
+    if not news_titles or not GEMINI_API_KEY:
+        return "近期無重大公開新聞或多空消息。"
+
+    news_text = "\n".join(news_titles)
     
+    prompt = f"""
+    你是一位專業、客觀的台股分析師。以下是我從正規財經網站抓取關於【{stock_id} {stock_name}】的最新新聞標題：
+    
+    {news_text}
+    
+    你的任務：
+    1. 嚴格過濾沒有根據的個人發言、討論區閒聊或無關雜訊。
+    2. 將報導「相同事件」的新聞合併。
+    3. 輸出「50字以內」的精簡多空重點摘要，直接破題，不要使用「根據新聞...」等開場白。
+    4. 如果全部都是雜訊或舊聞，請「直接」回覆：「近期無重大公開新聞或多空消息。」
+    """
+
     try:
-        encoded_keyword = quote(keyword)
-        # 使用 Google News RSS 確保穩定抓取
-        url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        feed = feedparser.parse(url)
-        
-        tw_tz = zoneinfo.ZoneInfo("Asia/Taipei")
-        count = 0
-        
-        for entry in feed.entries:
-            # 轉換 RSS 的 UTC 時間為台灣時間
-            pub_utc = datetime(*entry.published_parsed[:6], tzinfo=zoneinfo.ZoneInfo('UTC'))
-            pub_tw = pub_utc.astimezone(tw_tz)
-            
-            # 嚴格判斷是否落在 前一天 08:30 ~ 今天 08:30
-            if start_time <= pub_tw <= end_time:
-                title = entry.title
-                link = entry.link
-                news_item = f"• {title}\n  🔗 {link}"
-                
-                if news_item not in news_list:
-                    news_list.append(news_item)
-                    count += 1
-                    
-            if count >= 4: # 每檔股票最多取 4 篇
-                break
-                
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        print(f"新聞抓取失敗 ({keyword}): {e}")
+        print(f"Gemini API 錯誤: {e}")
+        return "新聞摘要生成失敗，請稍後再試。"
 
-    return news_list
+# ---------------------------------------------------------
+# 3. 主程式：產出報告並推播給使用者
+# ---------------------------------------------------------
+def send_morning_reports():
+    print("開始產出台股晨報...")
+    
+    # 取出所有有設定股票清單的使用者
+    users = list(users_collection.find({"stocks": {"$exists": True, "$ne": []}}))
+    if not users:
+        print("沒有使用者需要發送晨報。")
+        return
 
-# ==========================================
-# ⏰ 每日早報自動推播路由 (供外部定時工具呼叫)
-# ==========================================
-@app.route("/morning_report", methods=["GET"])
-def morning_report():
-    try:
-        # 1. 計算時間邊界 (前一天 08:30 ~ 當下或今天 08:30)
-        tw_tz = zoneinfo.ZoneInfo("Asia/Taipei")
-        now = datetime.now(tw_tz)
+    # 建立快取字典，避免重複爬蟲與浪費 Gemini Token
+    stock_summary_cache = {}
+
+    for user in users:
+        user_id = user["_id"]
+        stocks = user["stocks"]
         
-        end_time = datetime.combine(now.date(), dt_time(8, 30), tzinfo=tw_tz)
-        if now < end_time:
-            end_time = datetime.combine(now.date(), dt_time(8, 30), tzinfo=tw_tz) - timedelta(days=1)
-        start_time = end_time - timedelta(days=1)
+        report_lines = ["☀️【早安！台股監測多空晨報】\n為你整理今日關注股票的最新動態：\n"]
         
-        # 2. 開始撈取資料庫用戶推播
-        all_users = users_collection.find()
-        count = 0
-        for user in all_users:
-            user_id = user.get("_id")
-            stocks = user.get("stocks", [])
-            if not stocks:
-                continue
+        for stock_id in stocks:
+            # 取得股票名稱
+            stock_name = ""
+            if stock_id in twstock.codes:
+                stock_name = twstock.codes[stock_id].name
+            elif stock_id in MANUAL_MAP:
+                stock_name = MANUAL_MAP[stock_id]
+            else:
+                stock_name = "其他股票"
             
-            report_content = f"☀️【早安！台股監測多空晨報】\n搜尋區間：{start_time.strftime('%m/%d %H:%M')} ~ {end_time.strftime('%m/%d %H:%M')}\n為你整理今日關注股票的最新動態：\n"
+            # 如果這檔股票還沒被整理過，就執行爬蟲+AI摘要
+            if stock_id not in stock_summary_cache:
+                print(f"處理中: {stock_id} {stock_name}...")
+                news_titles = fetch_stock_news(stock_id)
+                summary = generate_gemini_summary(stock_id, stock_name, news_titles)
+                stock_summary_cache[stock_id] = summary
             
-            for stock_id in stocks:
-                stock_name = ""
-                if stock_id in twstock.codes:
-                    stock_name = twstock.codes[stock_id].name
-                elif stock_id in MANUAL_MAP:
-                    stock_name = MANUAL_MAP[stock_id]
-                else:
-                    stock_name = "其他股票"
-                
-                report_content += f"\n📊 標的：{stock_id} {stock_name}\n"
-                
-                # 傳入精準的時間區間進行抓取
-                news = fetch_stock_news(stock_name, start_time, end_time)
-                
-                # 若用名稱抓不到，改用代碼抓取
-                if not news and stock_name != stock_id:
-                    news = fetch_stock_news(stock_id, start_time, end_time)
-                
-                if news:
-                    report_content += "\n".join(news) + "\n"
-                else:
-                    report_content += "• 近期無重大公開新聞或多空消息。\n"
-                
-                # 避免連續請求被 Google 阻擋
-                time.sleep(1.5)
+            # 組合單檔股票的報告文字
+            summary = stock_summary_cache[stock_id]
+            report_lines.append(f"📊 標的：{stock_id} {stock_name}\n• {summary}\n")
 
-            # 主動推播訊息給使用者
-            line_bot_api.push_message(user_id, TextSendMessage(text=report_content.strip()))
-            count += 1
-
-        return f"Morning report sent successfully to {count} users!", 200
-    except Exception as e:
-        return f"Error: {str(e)}", 500
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text.strip()
-    reply_text = ""
-
-    # 1. 處理查看清單指令 (list)
-    if text.lower() == "list":
-        user_data = users_collection.find_one({"_id": user_id})
-        current_stocks = user_data.get("stocks", []) if user_data else []
-
-        if not current_stocks:
-            reply_text = "你的監測名單目前是空的喔！"
-        else:
-            reply_text = "📊【你的專屬監測名單】\n"
-            for stock_id in current_stocks:
-                stock_name = ""
-                if stock_id in twstock.codes:
-                    stock_name = twstock.codes[stock_id].name
-                elif stock_id in MANUAL_MAP:
-                    stock_name = MANUAL_MAP[stock_id]
-                reply_text += f"🔹 {stock_id} {stock_name}\n"
-
-    # 2. 處理新增股票指令 (結尾是 in)
-    elif text.endswith("in"):
-        content = text[:-2].strip()
-        raw_items = content.replace(",", " ").split()
+        # 將所有報告合併成單一文字訊息
+        final_report = "\n".join(report_lines).strip()
         
-        if not raw_items:
-            reply_text = "❌ 請輸入要加入的股票代號或名稱喔！"
-        else:
-            user_data = users_collection.find_one({"_id": user_id})
-            current_stocks = user_data.get("stocks", []) if user_data else []
-            
-            success_list = []
-            fail_list = []
-
-            for item in raw_items:
-                stock_id = None
-                stock_name = ""
-
-                if item.isdigit():
-                    stock_id = item
-                    if stock_id in twstock.codes:
-                        stock_name = twstock.codes[stock_id].name
-                    elif stock_id in MANUAL_MAP:
-                        stock_name = MANUAL_MAP[stock_id]
-                    else:
-                        stock_name = "其他股票"
-                else:
-                    reverse_map = {v: k for k, v in MANUAL_MAP.items()}
-                    if item in reverse_map:
-                        stock_id = reverse_map[item]
-                        stock_name = item
-                    else:
-                        for code, obj in twstock.codes.items():
-                            if obj.name == item and obj.type == '股票':
-                                stock_id = code
-                                stock_name = obj.name
-                                break
-
-                if stock_id:
-                    if stock_id not in current_stocks:
-                        current_stocks.append(stock_id)
-                    success_list.append(f"{stock_id} {stock_name}")
-                else:
-                    fail_list.append(item)
-
-            users_collection.update_one(
-                {"_id": user_id},
-                {"$set": {"stocks": current_stocks}},
-                upsert=True
+        # 推播給該使用者
+        try:
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(text=final_report)
             )
+            print(f"成功發送晨報給 {user_id}")
+        except Exception as e:
+            print(f"推播失敗 ({user_id}): {e}")
 
-            reply_text = ""
-            if success_list:
-                reply_text += "✅ 成功加入以下股票：\n" + "\n".join([f"• {s}" for s in success_list])
-            if fail_list:
-                reply_text += f"\n❌ 找不到以下項目：{', '.join(fail_list)}"
-
-    # 3. 處理刪除股票指令 (結尾是 out)
-    elif text.endswith("out"):
-        content = text[:-3].strip()
-        raw_items = content.replace(",", " ").split()
-        
-        if not raw_items:
-            reply_text = "❌ 請輸入要刪除的股票代號或名稱喔！"
-        else:
-            user_data = users_collection.find_one({"_id": user_id})
-            current_stocks = user_data.get("stocks", []) if user_data else []
-            
-            success_list = []
-            fail_list = []
-
-            for item in raw_items:
-                stock_id = None
-                stock_name = ""
-
-                if item.isdigit():
-                    stock_id = item
-                    if stock_id in twstock.codes:
-                        stock_name = twstock.codes[stock_id].name
-                    elif stock_id in MANUAL_MAP:
-                        stock_name = MANUAL_MAP[stock_id]
-                    else:
-                        stock_name = "其他股票"
-                else:
-                    reverse_map = {v: k for k, v in MANUAL_MAP.items()}
-                    if item in reverse_map:
-                        stock_id = reverse_map[item]
-                        stock_name = item
-                    else:
-                        for code, obj in twstock.codes.items():
-                            if obj.name == item and obj.type == '股票':
-                                stock_id = code
-                                stock_name = obj.name
-                                break
-
-                if stock_id and stock_id in current_stocks:
-                    current_stocks.remove(stock_id)
-                    success_list.append(f"{stock_id} {stock_name}")
-                else:
-                    fail_list.append(item)
-
-            users_collection.update_one(
-                {"_id": user_id},
-                {"$set": {"stocks": current_stocks}},
-                upsert=True
-            )
-
-            reply_text = ""
-            if success_list:
-                reply_text += "🗑️ 成功從清單移除以下股票：\n" + "\n".join([f"• {s}" for s in success_list])
-            if fail_list:
-                reply_text += f"\n❌ 清單中找不到以下項目：{', '.join(fail_list)}"
-
-    # 若有產生回覆內容則傳送給使用者
-    if reply_text:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_text.strip())
-        )
+    print("晨報發送完畢！")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    send_morning_reports()
