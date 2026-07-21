@@ -52,21 +52,22 @@ def handle_message(event):
                 # 利用 twstock 快速帶出股票名稱
                 if stock_id in twstock.codes:
                     stock_name = twstock.codes[stock_id].name
-                else:
-                    # 如果字典沒收錄，給予預設提示避免空白
-                    stock_name = "(名稱未收錄)"
                 reply_text += f"🔹 {stock_id} {stock_name}\n"
 
-    # 2. 處理新增股票指令 (結尾是 in，例如：2330 in 或 台積電 in)
+    # 2. 處理新增股票指令 (結尾是 in，例如：2330 in 或 7911 in 或 台積電 in)
     elif text.endswith("in"):
         target_name_or_id = text[:-2].strip()
         stock_id = None
-        stock_name = None
+        stock_name = ""
 
-        # A：直接輸入代號 (例如 2330)
-        if target_name_or_id in twstock.codes:
+        # A：判斷是不是純數字代號 (支援 2330 上市櫃，也支援 7911 興櫃或其他代號)
+        if target_name_or_id.isdigit():
             stock_id = target_name_or_id
-            stock_name = twstock.codes[stock_id].name
+            if stock_id in twstock.codes:
+                stock_name = twstock.codes[stock_id].name
+            else:
+                stock_name = "興櫃/其他股票"
+
         else:
             # B：輸入中文名稱反查代號 (例如 台積電)
             for code, obj in twstock.codes.items():
@@ -89,7 +90,7 @@ def handle_message(event):
                 )
             reply_text = f"✅ 已將【{stock_id} {stock_name}】加入你的監測名單！"
         else:
-            reply_text = f"❌ 找不到代號或名稱為「{target_name_or_id}」的股票，請重新確認喔！"
+            reply_text = f"❌ 找不到名稱為「{target_name_or_id}」的股票，請重新確認喔！"
 
     # 若有產生回覆內容則傳送給使用者
     if reply_text:
