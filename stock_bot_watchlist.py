@@ -5,8 +5,6 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from pymongo import MongoClient
 import twstock
-import requests
-import json
 
 app = Flask(__name__)
 
@@ -23,31 +21,11 @@ client = MongoClient(MONGO_URI)
 db = client["stock_db"]
 users_collection = db["users"]
 
-def get_stock_name(stock_id):
-    """
-    智慧查股名函式：
-    1. 先從 twstock 內建字典找
-    2. 若找不到，自動連線至證交所/櫃買中心公開 API 即時抓取全市場（含興櫃）股名
-    """
-    # 1. 先從 twstock 找
-    if stock_id in twstock.codes:
-        return twstock.codes[stock_id].name
-        
-    # 2. 若 twstock 沒有，透過公開 API 即時查詢（支援興櫃與所有最新股票）
-    try:
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw|兴櫃_{stock_id}.tw"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=3)
-        data = res.json()
-        if data.get("msgArray") and len(data["msgArray"]) > 0:
-            # 取得股票簡稱 (n 欄位)
-            name = data["msgArray"][0].get("n", "")
-            if name:
-                return name
-    except Exception as e:
-        print(f"查詢股名發生錯誤: {e}")
-        
-    return "興櫃/其他股票"
+# 手動對應字典 (處理 twstock 抓不到的興櫃股或自訂名稱)
+MANUAL_MAP = {
+    "7911": "阿波羅電力",
+    "7856": "漢測"
+}
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -76,10 +54,16 @@ def handle_message(event):
         else:
             reply_text = "📊【你的專屬監測名單】\n"
             for stock_id in current_stocks:
-                stock_name = get_stock_name(stock_id)
+                stock_name = ""
+                # 優先從 twstock 抓，如果沒有則從 MANUAL_MAP 抓
+                if stock_id in twstock.codes:
+                    stock_name = twstock.codes[stock_id].name
+                elif stock_id in MANUAL_MAP:
+                    stock_name = MANUAL_MAP[stock_id]
+                    
                 reply_text += f"🔹 {stock_id} {stock_name}\n"
 
-    # 2. 處理新增股票指令 (支援批次輸入，空白隔開，結尾 in)
+    # 2. 處理新增股票指令 (結尾是 in，支援單檔或多檔空白隔開)
     elif text.endswith("in"):
         content = text[:-2].strip()
         raw_items = content.replace(",", " ").split()
@@ -97,17 +81,25 @@ def handle_message(event):
                 stock_id = None
                 stock_name = ""
 
-                # 如果輸入的是純數字代號
                 if item.isdigit():
                     stock_id = item
-                    stock_name = get_stock_name(stock_id)
+                    if stock_id in twstock.codes:
+                        stock_name = twstock.codes[stock_id].name
+                    elif stock_id in MANUAL_MAP:
+                        stock_name = MANUAL_MAP[stock_id]
+                    else:
+                        stock_name = "其他股票"
                 else:
-                    # 如果輸入的是中文名稱，先用 twstock 反查
-                    for code, obj in twstock.codes.items():
-                        if obj.name == item and obj.type == '股票':
-                            stock_id = code
-                            stock_name = obj.name
-                            break
+                    reverse_map = {v: k for k, v in MANUAL_MAP.items()}
+                    if item in reverse_map:
+                        stock_id = reverse_map[item]
+                        stock_name = item
+                    else:
+                        for code, obj in twstock.codes.items():
+                            if obj.name == item and obj.type == '股票':
+                                stock_id = code
+                                stock_name = obj.name
+                                break
 
                 if stock_id:
                     if stock_id not in current_stocks:
@@ -128,6 +120,7 @@ def handle_message(event):
             if fail_list:
                 reply_text += f"\n❌ 找不到以下項目：{', '.join(fail_list)}"
 
+    # 若有產生回覆內容則傳送給使用者
     if reply_text:
         line_bot_api.reply_message(
             event.reply_token,
