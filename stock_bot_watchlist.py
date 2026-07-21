@@ -58,7 +58,8 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
-    text = event.text.strip()
+    # 修正：正確從 event.message.text 取得訊息文字
+    text = event.message.text.strip()
     parts = text.split()
 
     if len(parts) >= 2:
@@ -69,7 +70,6 @@ def handle_message(event):
             success_stocks = []
             
             for stock_id in stock_ids:
-                # 檢查代號合法性
                 stock_name = ""
                 if stock_id in twstock.codes:
                     stock_name = twstock.codes[stock_id].name
