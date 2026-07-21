@@ -55,15 +55,13 @@ def handle_message(event):
             reply_text = "📊【你的專屬監測名單】\n"
             for stock_id in current_stocks:
                 stock_name = ""
-                # 優先從 twstock 抓，如果沒有則從 MANUAL_MAP 抓
                 if stock_id in twstock.codes:
                     stock_name = twstock.codes[stock_id].name
                 elif stock_id in MANUAL_MAP:
                     stock_name = MANUAL_MAP[stock_id]
-                    
                 reply_text += f"🔹 {stock_id} {stock_name}\n"
 
-    # 2. 處理新增股票指令 (結尾是 in，支援單檔或多檔空白隔開)
+    # 2. 處理新增股票指令 (結尾是 in)
     elif text.endswith("in"):
         content = text[:-2].strip()
         raw_items = content.replace(",", " ").split()
@@ -119,6 +117,62 @@ def handle_message(event):
                 reply_text += "✅ 成功加入以下股票：\n" + "\n".join([f"• {s}" for s in success_list])
             if fail_list:
                 reply_text += f"\n❌ 找不到以下項目：{', '.join(fail_list)}"
+
+    # 3. 處理刪除股票指令 (結尾是 out)
+    elif text.endswith("out"):
+        content = text[:-3].strip()
+        raw_items = content.replace(",", " ").split()
+        
+        if not raw_items:
+            reply_text = "❌ 請輸入要刪除的股票代號或名稱喔！"
+        else:
+            user_data = users_collection.find_one({"_id": user_id})
+            current_stocks = user_data.get("stocks", []) if user_data else []
+            
+            success_list = []
+            fail_list = []
+
+            for item in raw_items:
+                stock_id = None
+                stock_name = ""
+
+                if item.isdigit():
+                    stock_id = item
+                    if stock_id in twstock.codes:
+                        stock_name = twstock.codes[stock_id].name
+                    elif stock_id in MANUAL_MAP:
+                        stock_name = MANUAL_MAP[stock_id]
+                    else:
+                        stock_name = "其他股票"
+                else:
+                    reverse_map = {v: k for k, v in MANUAL_MAP.items()}
+                    if item in reverse_map:
+                        stock_id = reverse_map[item]
+                        stock_name = item
+                    else:
+                        for code, obj in twstock.codes.items():
+                            if obj.name == item and obj.type == '股票':
+                                stock_id = code
+                                stock_name = obj.name
+                                break
+
+                if stock_id and stock_id in current_stocks:
+                    current_stocks.remove(stock_id)
+                    success_list.append(f"{stock_id} {stock_name}")
+                else:
+                    fail_list.append(item)
+
+            users_collection.update_one(
+                {"_id": user_id},
+                {"$set": {"stocks": current_stocks}},
+                upsert=True
+            )
+
+            reply_text = ""
+            if success_list:
+                reply_text += "🗑️ 成功從清單移除以下股票：\n" + "\n".join([f"• {s}" for s in success_list])
+            if fail_list:
+                reply_text += f"\n❌ 清單中找不到以下項目：{', '.join(fail_list)}"
 
     # 若有產生回覆內容則傳送給使用者
     if reply_text:
