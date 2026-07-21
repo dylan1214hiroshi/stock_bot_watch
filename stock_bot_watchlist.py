@@ -7,7 +7,7 @@ from pymongo import MongoClient
 import twstock
 
 # 匯入我們寫好的 AI 晨報模組
-from morning_report import send_morning_reports
+from morning_report import send_morning_reports, MANUAL_MAP
 
 app = Flask(__name__)
 
@@ -58,7 +58,6 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
-    # 正確取得訊息文字
     text = event.message.text.strip()
     parts = text.split()
 
@@ -73,10 +72,8 @@ def handle_message(event):
                 stock_name = ""
                 if stock_id in twstock.codes:
                     stock_name = twstock.codes[stock_id].name
-                elif stock_id == "7911":
-                    stock_name = "阿波羅電力"
-                elif stock_id == "7856":
-                    stock_name = "漢測"
+                elif stock_id in MANUAL_MAP:
+                    stock_name = MANUAL_MAP[stock_id]
                 else:
                     continue  # 略過無效代號
                 
@@ -110,7 +107,18 @@ def handle_message(event):
         user_data = users_collection.find_one({"_id": user_id})
         if user_data and "stocks" in user_data and user_data["stocks"]:
             stocks = user_data["stocks"]
-            msg = "📋 你的目前監測清單：\n" + "\n".join([f"• {s}" for s in stocks])
+            list_lines = []
+            for stock_id in stocks:
+                stock_name = ""
+                if stock_id in twstock.codes:
+                    stock_name = twstock.codes[stock_id].name
+                elif stock_id in MANUAL_MAP:
+                    stock_name = MANUAL_MAP[stock_id]
+                else:
+                    stock_name = "其他股票"
+                list_lines.append(f"• {stock_id} {stock_name}")
+            
+            msg = "📋 你的目前監測清單：\n" + "\n".join(list_lines)
         else:
             msg = "📋 你的監測名單目前是空的喔！\n請輸入「代號 in」來新增（例如：2330 in）。"
         
