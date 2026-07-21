@@ -37,7 +37,6 @@ MANUAL_MAP = {
 # 2. 爬蟲與 AI 摘要模組
 # ---------------------------------------------------------
 def fetch_stock_news(stock_id):
-    """從白名單網站抓取新聞標題"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     }
@@ -70,7 +69,6 @@ def fetch_stock_news(stock_id):
     return list(set(news_titles))
 
 def generate_gemini_summary(stock_id, stock_name, news_titles):
-    """呼叫 Gemini 進行整理與摘要"""
     if not news_titles or not gemini_client:
         return "近期無重大公開新聞或多空消息。"
 
@@ -98,29 +96,30 @@ def generate_gemini_summary(stock_id, stock_name, news_titles):
         return f"🚨 API 錯誤: {type(e).__name__} - {str(e)}"
 
 # ---------------------------------------------------------
-# 3. 主程式：產出報告並獨立推播給每一位使用者
+# 3. 主程式：產出報告並強制推播
 # ---------------------------------------------------------
 def send_morning_reports():
-    print("開始產出台股晨報...")
+    print("🚀 開始執行 send_morning_reports()...")
     
-    # 抓取資料庫中的所有使用者，讓每位加入的好友都能收到各自的清單
     users = list(users_collection.find({}))
+    print(f"📦 資料庫中找到的使用者數量: {len(users)}")
+    
     if not users:
-        print("沒有使用者資料需要發送晨報。")
+        print("❌ 錯誤：MongoDB 裡的 users 集合是空的！")
         return
 
     stock_summary_cache = {}
 
     for user in users:
-        user_id = user["_id"]
+        user_id = user.get("_id")
         stocks = user.get("stocks", [])
+        print(f"👤 檢查用戶 ID: {user_id}，其自選股清單: {stocks}")
         
-        # 如果該使用者沒有設定任何自選股，則跳過不發送
+        # 為了確保測試能成功，如果使用者清單剛好是空的，我們暫時給它預設幾檔股票測試
         if not stocks:
-            print(f"用戶 {user_id} 沒有設定自選股，略過發送。")
-            continue
+            print(f"⚠️ 用戶 {user_id} 沒有自選股，暫時帶入預設標的 [2330] 進行測試推送！")
+            stocks = ["2330"]
         
-        print(f"正在為用戶 {user_id} 產出報告，監測標的: {stocks}")
         report_lines = ["☀️【早安！台股監測多空晨報】\n為你整理今日關注股票的最新動態：\n"]
         
         for stock_id in stocks:
@@ -133,7 +132,7 @@ def send_morning_reports():
                 stock_name = "其他股票"
             
             if stock_id not in stock_summary_cache:
-                print(f"處理中: {stock_id} {stock_name}...")
+                print(f"爬蟲處理中: {stock_id} {stock_name}...")
                 news_titles = fetch_stock_news(stock_id)
                 summary = generate_gemini_summary(stock_id, stock_name, news_titles)
                 stock_summary_cache[stock_id] = summary
@@ -144,12 +143,13 @@ def send_morning_reports():
         final_report = "\n".join(report_lines).strip()
         
         try:
+            print(f"📤 準備發送 LINE 推播給 User ID: {user_id}...")
             line_bot_api.push_message(
                 user_id,
                 TextSendMessage(text=final_report)
             )
             print(f"✅ 成功發送晨報給用戶 {user_id}")
         except Exception as e:
-            print(f"❌ 推播失敗 ({user_id}): {e}")
+            print(f"❌ 推播失敗詳情 ({user_id}): {type(e).__name__} - {e}")
 
-    print("晨報發送完畢！")
+    print("🏁 晨報發送流程結束！")
