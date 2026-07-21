@@ -1,4 +1,5 @@
-Flask==3.0.2
-line-bot-sdk==3.5.0
-requests==2.31.0
-pymongo==4.6.1
+flask
+line-bot-sdk
+pymongo
+dnspython
+twstock==0.1.4
