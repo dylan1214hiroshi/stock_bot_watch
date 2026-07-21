@@ -42,53 +42,56 @@ def callback():
     return "OK"
 
 # ==========================================
-# 📰 多源新聞爬蟲核心函式 (Google 新聞 + 鉅亨網)
+# 📰 優化版多源新聞爬蟲核心函式 (Google 新聞 + 鉅亨網)
 # ==========================================
 def fetch_stock_news(keyword):
     news_list = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
-    # 1. 抓取 Google 新聞
+    # 1. 抓取 Google 新聞 (放寬限制，每檔股票取前 4 篇)
     try:
         encoded_keyword = quote(keyword)
-        url = f"https://news.google.com/search?q={encoded_keyword}%20股票&hl=zh-TW&gl=TW&ceid=TW%3Azh-Hant"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, headers=headers, timeout=5)
+        url = f"https://news.google.com/search?q={encoded_keyword}&hl=zh-TW&gl=TW&ceid=TW%3Azh-Hant"
+        res = requests.get(url, headers=headers, timeout=6)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            articles = soup.find_all("article", limit=2) # 每檔股票取前 2 篇
+            articles = soup.find_all("article", limit=4)
             for art in articles:
                 title_elem = art.find("a")
                 if title_elem:
-                    title = title_elem.text
-                    link = "https://news.google.com" + title_elem["href"][1:] if title_elem["href"].startswith(".") else title_elem["href"]
-                    news_list.append(f"• {title}\n  🔗 {link}")
+                    title = title_elem.text.strip()
+                    href = title_elem["href"]
+                    link = "https://news.google.com" + href[1:] if href.startswith(".") else href
+                    news_item = f"• {title}\n  🔗 {link}"
+                    if news_item not in news_list:
+                        news_list.append(news_item)
     except Exception as e:
         print(f"Google 新聞抓取失敗 ({keyword}): {e}")
 
-    # 2. 抓取鉅亨網 (Anue) 搜尋結果
+    # 2. 抓取鉅亨網 (Anue) 搜尋結果 (放寬取最多 2 篇)
     try:
         encoded_keyword = quote(keyword)
         url = f"https://news.cnyes.com/news/search?q={encoded_keyword}"
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=6)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            # 尋找鉅亨網新聞標題連結
             links = soup.find_all("a", href=True)
             count = 0
             for l in links:
                 href = l["href"]
-                if "/news/id/" in href and len(l.text.strip()) > 5:
-                    title = l.text.strip()
+                text_content = l.text.strip()
+                if "/news/id/" in href and len(text_content) > 4:
                     full_link = f"https://news.cnyes.com{href}" if href.startswith("/") else href
-                    if f"• {title}" not in news_list:
-                        news_list.append(f"• {title}\n  🔗 {full_link}")
+                    news_item = f"• {text_content}\n  🔗 {full_link}"
+                    if not any(text_content in existing for existing in news_list):
+                        news_list.append(news_item)
                         count += 1
-                        if count >= 1: # 鉅亨網取 1 篇
+                        if count >= 2:
                             break
     except Exception as e:
         print(f"鉅亨網抓取失敗 ({keyword}): {e}")
 
-    return news_list[:3] # 總共合併取前 3 則
+    return news_list[:4] # 總共合併取前 4 則最相關新聞
 
 # ==========================================
 # ⏰ 每日早報自動推播路由 (供外部定時工具呼叫)
@@ -117,8 +120,11 @@ def morning_report():
                 
                 report_content += f"\n📊 標的：{stock_id} {stock_name}\n"
                 
-                # 同時以代號與名稱搜尋新聞
-                news = fetch_stock_news(stock_name) or fetch_stock_news(stock_id)
+                # 同時以代號與名稱搜尋，確保能最大化抓取到新聞
+                news = fetch_stock_news(stock_name)
+                if not news and stock_name != stock_id:
+                    news = fetch_stock_news(stock_id)
+                
                 if news:
                     report_content += "\n".join(news) + "\n"
                 else:
