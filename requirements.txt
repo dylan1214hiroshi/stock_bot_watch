@@ -2,4 +2,4 @@ flask
 line-bot-sdk
 pymongo
 dnspython
-twstock==0.1.4
+twstock
