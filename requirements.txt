@@ -1,3 +1,7 @@
-google-generativeai
+Flask
+line-bot-sdk
+pymongo
+twstock
 requests
 beautifulsoup4
+google-genai
