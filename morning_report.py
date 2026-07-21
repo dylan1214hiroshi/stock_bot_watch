@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from bs4 import BeautifulSoup
 from google import genai
@@ -86,24 +87,35 @@ def generate_gemini_summary(stock_id, stock_name, news_titles):
     4. 如果全部都是雜訊或舊聞，請「直接」回覆：「近期無重大公開新聞或多空消息。」
     """
 
-    try:
-        response = gemini_client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt,
-        )
-        return response.text.strip()
-    except Exception as e:
-        return f"🚨 API 錯誤: {type(e).__name__} - {str(e)}"
+    # 加上簡單的重試機制，避免短時間超載
+    for attempt in range(3):
+        try:
+            response = gemini_client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt,
+            )
+            return response.text.strip()
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                if attempt < 2:
+                    print(f"⚠️ 觸發 API 頻率限制 (429)，等待 6 秒後進行第 {attempt + 2} 次重試...")
+                    time.sleep(6)
+                    continue
+                else:
+                    return "⚠️ 目前 AI 請求過於頻繁（額度暫時用盡），請稍後再試。"
+            else:
+                return f"🚨 API 錯誤: {type(e).__name__} - {str(e)}"
+
+    return "近期無重大公開新聞或多空消息。"
 
 # ---------------------------------------------------------
-# 3. 主程式：產出報告並強制推播
+# 3. 主程式：產出報告並推送
 # ---------------------------------------------------------
 def send_morning_reports():
     print("🚀 開始執行 send_morning_reports()...")
     
     users = list(users_collection.find({}))
-    print(f"📦 資料庫中找到的使用者數量: {len(users)}")
-    
     if not users:
         print("❌ 錯誤：MongoDB 裡的 users 集合是空的！")
         return
@@ -113,13 +125,12 @@ def send_morning_reports():
     for user in users:
         user_id = user.get("_id")
         stocks = user.get("stocks", [])
-        print(f"👤 檢查用戶 ID: {user_id}，其自選股清單: {stocks}")
         
-        # 為了確保測試能成功，如果使用者清單剛好是空的，我們暫時給它預設幾檔股票測試
         if not stocks:
-            print(f"⚠️ 用戶 {user_id} 沒有自選股，暫時帶入預設標的 [2330] 進行測試推送！")
-            stocks = ["2330"]
+            print(f"⚠️ 用戶 {user_id} 沒有自選股，略過發送。")
+            continue
         
+        print(f"👤 正在為用戶 {user_id} 產出報告，監測標的: {stocks}")
         report_lines = ["☀️【早安！台股監測多空晨報】\n為你整理今日關注股票的最新動態：\n"]
         
         for stock_id in stocks:
@@ -132,10 +143,13 @@ def send_morning_reports():
                 stock_name = "其他股票"
             
             if stock_id not in stock_summary_cache:
-                print(f"爬蟲處理中: {stock_id} {stock_name}...")
+                print(f"爬蟲與 AI 處理中: {stock_id} {stock_name}...")
                 news_titles = fetch_stock_news(stock_id)
                 summary = generate_gemini_summary(stock_id, stock_name, news_titles)
                 stock_summary_cache[stock_id] = summary
+                
+                # 每次呼叫完 AI 後強制停頓 4 秒，防止超出免費頻率限制 (RPM)
+                time.sleep(4)
             
             summary = stock_summary_cache[stock_id]
             report_lines.append(f"📊 標的：{stock_id} {stock_name}\n• {summary}\n")
