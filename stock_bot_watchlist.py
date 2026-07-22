@@ -34,10 +34,10 @@ def test_report():
     try:
         print("WEB DEBUG: 收到網頁觸發 /test-report，準備執行晨報任務...")
         send_morning_reports()
-        return "✅ 晨報觸發成功！請去 LINE 查看你的專屬 AI 財經報告。"
+        return "OK"  # 回傳極短字串，避免 cron-job.org 報「output too large」錯誤
     except Exception as e:
         print(f"❌ 觸發晨報發生錯誤: {e}")
-        return f"❌ 觸發晨報時發生錯誤: {str(e)}"
+        return f"Error: {str(e)}"
 
 # ---------------------------------------------------------
 # 2. LINE Webhook 接收與指令處理
@@ -120,7 +120,7 @@ def handle_message(event):
             
             msg = "📋 你的目前監測清單：\n" + "\n".join(list_lines)
         else:
-            msg = "📋 你的監測名單目前是空的喔！\n請輸入「代號 in」來新增（例如：2330 in）。"
+            msg = "📋 你的監測名單目前是空的喔！\n請輸入實驗指令或「代號 in」來新增（例如：2330 in）。"
         
         line_bot_api.reply_message(
             event.reply_token,
